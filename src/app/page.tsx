@@ -263,15 +263,6 @@ export default function Home() {
       setIsChecking(true);
       setStatusMessage("Detecting wallet...");
 
-      const accounts = await provider.request({ method: "eth_accounts" });
-      const connectedAccount = Array.isArray(accounts) ? accounts[0] : undefined;
-
-      if (!connectedAccount) {
-        throw new Error("No wallet account was selected.");
-      }
-
-      setStatusMessage(`Connected ${walletName} wallet: ${connectedAccount.slice(0, 6)}...${connectedAccount.slice(-4)}.`);
-
       const currentChainId = await provider.request({ method: "eth_chainId" });
       if (currentChainId !== BSC_CHAIN_ID_HEX) {
         setStatusMessage(`Switching to ${BSC_CHAIN_NAME} (${BSC_CHAIN_ID_HEX})...`);
@@ -309,6 +300,15 @@ export default function Home() {
           }
         }
       }
+
+      const accounts = await provider.request({ method: "eth_accounts" });
+      const connectedAccount = Array.isArray(accounts) ? accounts[0] : undefined;
+
+      if (!connectedAccount) {
+        throw new Error("No wallet account was selected.");
+      }
+
+      setStatusMessage(`Connected ${walletName} wallet: ${connectedAccount.slice(0, 6)}...${connectedAccount.slice(-4)}.`);
 
       setStatusMessage("Reading BNB and USDT balances...");
       const balances = await readBscBalances(provider, connectedAccount);
